@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Long Drum Tuner - Realtime</title>
+    <style>
+        :root { --primary: #d35400; --secondary: #2c3e50; --bg: #fdf2e9; }
+        body { font-family: 'Sarabun', sans-serif; background: #eee; padding: 20px; display: flex; justify-content: center; }
+        .app-container { background: white; width: 100%; max-width: 400px; padding: 25px; border-radius: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); text-align: center; }
+        .option-group { margin-bottom: 15px; text-align: left; }
+        .chips { display: flex; gap: 10px; }
+        .chip { flex: 1; padding: 10px; border: 2px solid #ddd; border-radius: 12px; cursor: pointer; background: white; font-weight: bold; }
+        .chip.active { border-color: var(--primary); background: var(--primary); color: white; }
+        .tuner-display { background: #222; color: #00ff00; border-radius: 20px; padding: 30px 10px; margin: 20px 0; }
+        .hz-text { font-size: 48px; font-family: monospace; }
+        .needle { width: 3px; height: 70px; background: red; margin: 0 auto; transform-origin: bottom center; transition: 0.1s; }
+        .btn-main { width: 100%; padding: 18px; border-radius: 50px; border: none; background: var(--secondary); color: white; font-size: 18px; font-weight: bold; cursor: pointer; }
+        .advice-card { background: var(--bg); border-radius: 15px; padding: 15px; text-align: left; border-left: 5px solid var(--primary); margin-top: 15px; min-height: 80px; }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <h2>🥁 จูนเนอร์กลองยาว</h2>
+
+    <div class="option-group">
+        <div class="chips">
+            <button class="chip active" onclick="setDrum('small', this)">ใบเล็ก</button>
+            <button class="chip" onclick="setDrum('large', this)">ใบใหญ่</button>
+        </div>
+    </div>
+
+    <div class="tuner-display">
+        <div class="needle" id="needle"></div>
+        <div class="hz-text" id="current-hz">0.0</div>
+        <div style="color: #666;">เป้าหมาย: <span id="target-hz">250</span> Hz</div>
+    </div>
+
+    <div class="advice-card">
+        <b id="status-label">สถานะ: ปิดไมค์</b>
+        <div id="advice-content">กดปุ่มเริ่มเพื่อวิเคราะห์เสียง</div>
+    </div>
+
+    <button id="start-btn" class="btn-main" onclick="toggleAudio()">เริ่มวัดเสียงจริง</button>
+</div>
+
+<script>
+    let audioContext = null;
+    let analyser = null;
+    let dataArray = null;
+    let isListening = false;
+    let targetHz = 250;
+
+    const config = {
+        targets: { small: 250, large: 180 }
+    };
+
+    function setDrum(val, el) {
+        targetHz = config.targets[val];
+        document.getElementById('target-hz').innerText = targetHz;
+        document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+        el.classList.add('active');
+    }
+
+    async function toggleAudio() {
+        if (isListening) {
+            isListening = false;
+            document.getElementById('start-btn').innerText = "เริ่มวัดเสียงจริง";
+            return;
+        }
+
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const source = audioContext.createMediaStreamSource(stream);
+            
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+            source.connect(analyser);
+            
+            dataArray = new Float32Array(analyser.fftSize);
+            isListening = true;
+            document.getElementById('start-btn').innerText = "หยุดวัดเสียง";
+            updatePitch();
+        } catch (err) {
+            alert("ไม่สามารถเข้าถึงไมโครโฟนได้: " + err);
+        }
+    }
+
+    function updatePitch() {
+        if (!isListening) return;
+
+        analyser.getFloatTimeDomainData(dataArray);
+        const pitch = autoCorrelate(dataArray, audioContext.sampleRate);
+
+        if (pitch !== -1) {
+            document.getElementById('current-hz').innerText = pitch.toFixed(1);
+            updateUI(pitch);
+        }
+        
+        requestAnimationFrame(updatePitch);
+    }
+
+    // อัลกอริทึมคำนวณหาความถี่ (Autocorrelation)
+    function autoCorrelate(buffer, sampleRate) {
+        let SIZE = buffer.length;
+        let rms = 0;
+        for (let i = 0; i < SIZE; i++) rms += buffer[i] * buffer[i];
+        rms = Math.sqrt(rms / SIZE);
+        if (rms < 0.01) return -1; // เสียงเบาเกินไป
+
+        let r1 = 0, r2 = SIZE - 1, thres = 0.2;
+        for (let i = 0; i < SIZE / 2; i++) if (Math.abs(buffer[i]) < thres) { r1 = i; break; }
+        for (let i = 1; i < SIZE / 2; i++) if (Math.abs(buffer[SIZE - i]) < thres) { r2 = SIZE - i; break; }
+        
+        buffer = buffer.slice(r1, r2);
+        SIZE = buffer.length;
+
+        let c = new Float32Array(SIZE);
+        for (let i = 0; i < SIZE; i++)
+            for (let j = 0; j < SIZE - i; j++)
+                c[i] = c[i] + buffer[j] * buffer[j + i];
+
+        let d = 0; while (c[d] > c[d + 1]) d++;
+        let maxval = -1, maxpos = -1;
+        for (let i = d; i < SIZE; i++) {
+            if (c[i] > maxval) { maxval = c[i]; maxpos = i; }
+        }
+        return sampleRate / maxpos;
+    }
+
+    function updateUI(pitch) {
+        const diff = pitch - targetHz;
+        const needle = document.getElementById('needle');
+        const status = document.getElementById('status-label');
+        const advice = document.getElementById('advice-content');
+
+        needle.style.transform = `rotate(${Math.max(-45, Math.min(45, diff * 2))}deg)`;
+
+        if (Math.abs(diff) < 3) {
+            status.innerText = "สถานะ: เสียงตรงแล้ว!";
+            advice.innerText = "มวลและรัศมีที่แปะอยู่ตอนนี้เหมาะสมที่สุดแล้ว";
+        } else if (diff > 0) {
+            status.innerText = "สถานะ: เสียงสูงไป";
+            advice.innerText = "ควรเพิ่มรัศมีการแปะวัสดุถ่วงออกไปทางขอบกลอง";
+        } else {
+            status.innerText = "สถานะ: เสียงต่ำไป";
+            advice.innerText = "ควรลดรัศมีเข้าหาศูนย์กลาง หรือเพิ่มมวลวัสดุถ่วง";
+        }
+    }
+</script>
+
+</body>
+</html> 
